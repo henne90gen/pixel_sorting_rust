@@ -39,6 +39,17 @@ fn main() {
         }
     }
 
+    let height = imgbuf.height();
+    let width = imgbuf.width();
+    let mut raw = imgbuf.into_raw();
+
+    raw.sort_by_key(|pix| -> u8 { *pix });
+
     // Save the image as “fractal.png”, the format is deduced from the path
-    imgbuf.save("fractal.png").unwrap();
+    let result: Option<image::ImageBuffer<image::Rgb<u8>, _>> =
+        image::ImageBuffer::from_raw(width, height, raw);
+    match result {
+        Some(buf) => buf.save("fractal.png").unwrap(),
+        None => println!("Could not save"),
+    }
 }
