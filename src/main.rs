@@ -1,55 +1,182 @@
 extern crate image;
+extern crate itertools;
 extern crate num_complex;
+use crate::image::GenericImage;
+use crate::image::GenericImageView;
+use itertools::Itertools;
 
-fn main() {
-    let imgx = 800;
-    let imgy = 800;
+type Criteria = fn(&image::Rgb<u8>) -> u8;
 
-    let scalex = 3.0 / imgx as f32;
-    let scaley = 3.0 / imgy as f32;
+fn get_red(item: &image::Rgb<u8>) -> u8 {
+    item.0[0]
+}
+fn get_green(item: &image::Rgb<u8>) -> u8 {
+    item.0[1]
+}
+fn get_blue(item: &image::Rgb<u8>) -> u8 {
+    item.0[2]
+}
+fn get_average(item: &image::Rgb<u8>) -> u8 {
+    (item.0[0] + item.0[1] + item.0[2]) / 3
+}
 
-    // Create a new ImgBuf with width: imgx and height: imgy
-    let mut imgbuf = image::ImageBuffer::new(imgx, imgy);
+type Sorter = fn(
+    buf: &image::ImageBuffer<image::Rgb<u8>, std::vec::Vec<u8>>,
+    crit: fn(&image::Rgb<u8>) -> u8,
+) -> image::ImageBuffer<image::Rgb<u8>, std::vec::Vec<u8>>;
 
-    // Iterate over the coordinates and pixels of the image
-    for (x, y, pixel) in imgbuf.enumerate_pixels_mut() {
-        let r = (0.3 * x as f32) as u8;
-        let b = (0.3 * y as f32) as u8;
-        *pixel = image::Rgb([r, 0, b]);
-    }
+fn basic_sort(
+    buf: &image::ImageBuffer<image::Rgb<u8>, std::vec::Vec<u8>>,
+    crit: Criteria,
+) -> image::ImageBuffer<image::Rgb<u8>, std::vec::Vec<u8>> {
+    let sorted_pixels = buf
+        .pixels()
+        .sorted_by_key(|p| crit(p))
+        .flat_map(|p| p.0.iter())
+        .cloned()
+        .collect();
 
-    // A redundant loop to demonstrate reading image data
-    for x in 0..imgx {
-        for y in 0..imgy {
-            let cx = y as f32 * scalex - 1.5;
-            let cy = x as f32 * scaley - 1.5;
+    let width = buf.width();
+    let height = buf.height();
+    image::ImageBuffer::from_vec(width, height, sorted_pixels).unwrap()
+}
 
-            let c = num_complex::Complex::new(-0.4, 0.6);
-            let mut z = num_complex::Complex::new(cx, cy);
+fn checker_sort(
+    buf: &image::ImageBuffer<image::Rgb<u8>, std::vec::Vec<u8>>,
+    crit: Criteria,
+) -> image::ImageBuffer<image::Rgb<u8>, std::vec::Vec<u8>> {
+    let image_width = buf.width();
+    let image_height = buf.height();
 
-            let mut i = 0;
-            while i < 255_000 && z.norm() <= 2.0 {
-                z = z * z + c;
-                i += 1;
+    let mut result: image::ImageBuffer<image::Rgb<u8>, std::vec::Vec<u8>> =
+        image::ImageBuffer::new(image_width, image_height);
+
+    let width = image_width / 10;
+    let height = image_height / 10;
+    for y in 0..10 {
+        for x in 0..10 {
+            let x_offset = x * width;
+            let y_offset = y * height;
+            let sorted_pixels: Vec<(u32, u32, image::Rgb<u8>)> = buf
+                .view(x_offset, y_offset, width, height)
+                .pixels()
+                .sorted_by_key(|p| crit(&p.2))
+                /*.flat_map(|p| {
+                    let pixel = p.2;
+                    let mut data = Vec::new();
+                    for a in pixel.0.iter() {
+                        data.push(*a);
+                    }
+                    data
+                })*/
+                .clone()
+                .collect();
+            let mut sub_image = result.sub_image(x_offset, y_offset, width, height);
+            for (x_, y_, p) in sorted_pixels {
+                sub_image.put_pixel(x_, y_, p);
             }
-
-            let pixel = imgbuf.get_pixel_mut(x, y);
-            let image::Rgb(data) = *pixel;
-            *pixel = image::Rgb([data[0], i as u8, data[2]]);
         }
     }
 
-    let height = imgbuf.height();
-    let width = imgbuf.width();
-    let mut raw = imgbuf.into_raw();
+    result
+}
 
-    raw.sort_by_key(|pix| -> u8 { *pix });
+fn sort_image(
+    sorters: &std::collections::HashMap<String, Sorter>,
+    criterias: &std::collections::HashMap<String, Criteria>,
+    image_path: &std::path::Path,
+) {
+    let img_result = image::open(image_path);
+    let img = match img_result {
+        Err(e) => {
+            println!("Could not open image {:?}: {}", image_path, e);
+            return;
+        }
+        Ok(val) => val,
+    };
 
-    // Save the image as “fractal.png”, the format is deduced from the path
-    let result: Option<image::ImageBuffer<image::Rgb<u8>, _>> =
-        image::ImageBuffer::from_raw(width, height, raw);
-    match result {
-        Some(buf) => buf.save("fractal.png").unwrap(),
-        None => println!("Could not save"),
+    let img_buf = img.to_rgb();
+
+    let dir_name = match image_path.file_stem() {
+        None => return,
+        Some(x) => std::path::Path::new(x),
+    };
+    let dir_path = match image_path.parent() {
+        None => {
+            println!();
+            return;
+        }
+        Some(x) => x.join(dir_name),
+    };
+    if !dir_path.is_dir() {
+        match std::fs::create_dir(&dir_path) {
+            Err(e) => {
+                println!("Could not create directory {:?}: {}", dir_name, e);
+                return;
+            }
+            Ok(_) => (),
+        }
+    }
+
+    for (sort_name, sort) in sorters.iter() {
+        for (crit_name, crit) in criterias.iter() {
+            let file_path = dir_path.join(format!("{}-{}.png", sort_name, crit_name));
+
+            if file_path.exists() {
+                println!("Skipped {:?}", file_path);
+                continue;
+            }
+
+            let new_img = sort(&img_buf, *crit);
+            new_img.save(&file_path).unwrap();
+            println!("Saved {:?}", file_path);
+        }
+    }
+}
+
+fn main() {
+    let mut sorters: std::collections::HashMap<String, Sorter> = std::collections::HashMap::new();
+    sorters.insert("Basic".to_string(), basic_sort);
+    sorters.insert("Checker".to_string(), checker_sort);
+
+    let mut criterias: std::collections::HashMap<String, Criteria> =
+        std::collections::HashMap::new();
+    criterias.insert("Red".to_string(), get_red);
+    criterias.insert("Green".to_string(), get_green);
+    criterias.insert("Blue".to_string(), get_blue);
+    criterias.insert("Average".to_string(), get_average);
+
+    let root_dir = std::path::Path::new("res");
+    let dirs = match std::fs::read_dir(root_dir) {
+        Err(e) => {
+            println!("Could not find resource directory: {}", e);
+            return;
+        }
+        Ok(x) => x,
+    };
+
+    let mut handles = Vec::new();
+    for entry in dirs {
+        let dir = match entry {
+            Err(e) => {
+                println!("Could not look at dir entry: {}", e);
+                continue;
+            }
+            Ok(x) => x,
+        };
+        let image_name = dir.path();
+        if image_name.is_dir() {
+            continue;
+        }
+        let s = sorters.clone();
+        let c = criterias.clone();
+        let handle = std::thread::spawn(move || {
+            sort_image(&s, &c, &image_name);
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
     }
 }
