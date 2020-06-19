@@ -4,6 +4,7 @@ extern crate num_complex;
 use crate::image::GenericImage;
 use crate::image::GenericImageView;
 use itertools::Itertools;
+use std::convert::TryFrom;
 
 type Criteria = fn(&image::Rgb<u8>) -> u8;
 
@@ -17,7 +18,11 @@ fn get_blue(item: &image::Rgb<u8>) -> u8 {
     item.0[2]
 }
 fn get_average(item: &image::Rgb<u8>) -> u8 {
-    (item.0[0] + item.0[1] + item.0[2]) / 3
+    let val = (item.0[0] as u32 + item.0[1] as u32 + item.0[2] as u32) / 3;
+    match u8::try_from(val) {
+        Err(_) => std::u8::MAX,
+        Ok(v) => v,
+    }
 }
 
 type Sorter = fn(
@@ -51,29 +56,32 @@ fn checker_sort(
     let mut result: image::ImageBuffer<image::Rgb<u8>, std::vec::Vec<u8>> =
         image::ImageBuffer::new(image_width, image_height);
 
-    let width = image_width / 10;
-    let height = image_height / 10;
-    for y in 0..10 {
-        for x in 0..10 {
+    // TODO make sure an uneven count of checker cells does not crash
+    let rows = 100;
+    let cols = 100;
+    let width = image_width / rows;
+    let height = image_height / cols;
+    for y in 0..rows {
+        for x in 0..cols {
             let x_offset = x * width;
             let y_offset = y * height;
             let sorted_pixels: Vec<(u32, u32, image::Rgb<u8>)> = buf
                 .view(x_offset, y_offset, width, height)
                 .pixels()
                 .sorted_by_key(|p| crit(&p.2))
-                /*.flat_map(|p| {
-                    let pixel = p.2;
-                    let mut data = Vec::new();
-                    for a in pixel.0.iter() {
-                        data.push(*a);
-                    }
-                    data
-                })*/
                 .clone()
                 .collect();
+
             let mut sub_image = result.sub_image(x_offset, y_offset, width, height);
-            for (x_, y_, p) in sorted_pixels {
+            let mut x_ = 0;
+            let mut y_ = 0;
+            for (_, _, p) in sorted_pixels {
                 sub_image.put_pixel(x_, y_, p);
+                x_ += 1;
+                if x_ >= width {
+                    x_ = 0;
+                    y_ += 1;
+                }
             }
         }
     }
