@@ -90,6 +90,7 @@ fn checker_sort(
 }
 
 fn sort_image(
+    sender: &std::sync::mpsc::Sender<u32>,
     sorters: &std::collections::HashMap<String, Sorter>,
     criterias: &std::collections::HashMap<String, Criteria>,
     image_path: &std::path::Path,
@@ -137,7 +138,12 @@ fn sort_image(
 
             let new_img = sort(&img_buf, *crit);
             new_img.save(&file_path).unwrap();
-            println!("Saved {:?}", file_path);
+            let size = new_img.width() * new_img.height() * 3;
+            match sender.send(size) {
+                Ok(_) => (),
+                Err(e) => println!("Could not send back written size: {}", e),
+            }
+            println!("Saved {} bytes - {:?}", size, file_path);
         }
     }
 }
@@ -163,6 +169,9 @@ fn main() {
         Ok(x) => x,
     };
 
+    let (sender, receiver): (std::sync::mpsc::Sender<u32>, std::sync::mpsc::Receiver<u32>) =
+        std::sync::mpsc::channel();
+
     let mut handles = Vec::new();
     for entry in dirs {
         let dir = match entry {
@@ -178,8 +187,9 @@ fn main() {
         }
         let s = sorters.clone();
         let c = criterias.clone();
+        let send = sender.clone();
         let handle = std::thread::spawn(move || {
-            sort_image(&s, &c, &image_name);
+            sort_image(&send, &s, &c, &image_name);
         });
         handles.push(handle);
     }
@@ -187,4 +197,14 @@ fn main() {
     for handle in handles {
         handle.join().unwrap();
     }
+
+    let mut bytes_written = 0;
+    loop {
+        match receiver.try_recv() {
+            Err(_) => break,
+            Ok(v) => bytes_written += v,
+        }
+    }
+    let bytes_written_mb = bytes_written as f32 / 1024.0 / 1024.0;
+    println!("Wrote {} MB of data", bytes_written_mb);
 }
