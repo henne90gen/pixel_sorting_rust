@@ -4,30 +4,69 @@ extern crate num_complex;
 use crate::image::GenericImage;
 use crate::image::GenericImageView;
 use itertools::Itertools;
-use std::convert::TryFrom;
 
-type Criteria = fn(&image::Rgb<u8>) -> u8;
+type Criteria = fn(&image::Rgb<u8>) -> u32;
 
-fn get_red(item: &image::Rgb<u8>) -> u8 {
-    item.0[0]
+fn get_red(item: &image::Rgb<u8>) -> u32 {
+    item.0[0] as u32
 }
-fn get_green(item: &image::Rgb<u8>) -> u8 {
-    item.0[1]
+fn get_green(item: &image::Rgb<u8>) -> u32 {
+    item.0[1] as u32
 }
-fn get_blue(item: &image::Rgb<u8>) -> u8 {
-    item.0[2]
+fn get_blue(item: &image::Rgb<u8>) -> u32 {
+    item.0[2] as u32
 }
-fn get_average(item: &image::Rgb<u8>) -> u8 {
-    let val = (item.0[0] as u32 + item.0[1] as u32 + item.0[2] as u32) / 3;
-    match u8::try_from(val) {
-        Err(_) => std::u8::MAX,
-        Ok(v) => v,
+fn get_average(item: &image::Rgb<u8>) -> u32 {
+    (item.0[0] as u32 + item.0[1] as u32 + item.0[2] as u32) / 3
+}
+fn get_hue(item: &image::Rgb<u8>) -> u32 {
+    let r = item.0[0] as f32 / 255.0;
+    let g = item.0[1] as f32 / 255.0;
+    let b = item.0[2] as f32 / 255.0;
+    let c_max = f32::max(f32::max(r, g), b);
+    let c_min = f32::min(f32::min(r, g), b);
+    let delta = c_max - c_min;
+    if delta == 0.0 {
+        return 0;
     }
+    if c_max == r {
+        return 60 * (((g - b) / delta) as u32 % 6);
+    } else if c_max == g {
+        return 60 * (((b - r) / delta) as u32 + 2);
+    } else if c_max == b {
+        return 60 * (((r - g) / delta) as u32 + 4);
+    }
+    0
+}
+fn get_saturation(item: &image::Rgb<u8>) -> u32 {
+    let r = item.0[0] as f32 / 255.0;
+    let g = item.0[1] as f32 / 255.0;
+    let b = item.0[2] as f32 / 255.0;
+    let c_max = f32::max(f32::max(r, g), b);
+    let c_min = f32::min(f32::min(r, g), b);
+    let delta = c_max - c_min;
+    if delta == 0.0 {
+        return 0;
+    }
+    let l = (c_max + c_min) / 2.0;
+    (delta / (1.0 - (2.0 * l - 1.0).abs())) as u32
+}
+fn get_lightness(item: &image::Rgb<u8>) -> u32 {
+    let r = item.0[0] as f32 / 255.0;
+    let g = item.0[1] as f32 / 255.0;
+    let b = item.0[2] as f32 / 255.0;
+    let c_max = f32::max(f32::max(r, g), b);
+    let c_min = f32::min(f32::min(r, g), b);
+    let delta = c_max - c_min;
+    if delta == 0.0 {
+        return 0;
+    }
+    ((c_max + c_min) / 2.0) as u32
 }
 
 type Sorter = fn(
     buf: &image::ImageBuffer<image::Rgb<u8>, std::vec::Vec<u8>>,
-    crit: fn(&image::Rgb<u8>) -> u8,
+    crit: Criteria,
 ) -> image::ImageBuffer<image::Rgb<u8>, std::vec::Vec<u8>>;
 
 fn basic_sort(
@@ -159,6 +198,9 @@ fn main() {
     criterias.insert("Green".to_string(), get_green);
     criterias.insert("Blue".to_string(), get_blue);
     criterias.insert("Average".to_string(), get_average);
+    criterias.insert("Hue".to_string(), get_hue);
+    criterias.insert("Saturation".to_string(), get_saturation);
+    criterias.insert("Lightness".to_string(), get_lightness);
 
     let root_dir = std::path::Path::new("res");
     let dirs = match std::fs::read_dir(root_dir) {
