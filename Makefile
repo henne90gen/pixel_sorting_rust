@@ -1,2 +1,2 @@
 run:
-	time cargo run --release
+	time cargo run --release --features multithread

@@ -1,6 +1,8 @@
 extern crate image;
 extern crate itertools;
 extern crate num_complex;
+extern crate num_cpus;
+extern crate threadpool;
 use crate::image::GenericImage;
 use crate::image::GenericImageView;
 use itertools::Itertools;
@@ -129,6 +131,7 @@ fn checker_sort(
 }
 
 fn sort_image(
+    pool: &threadpool::ThreadPool,
     sender: &std::sync::mpsc::Sender<u32>,
     sorters: &std::collections::HashMap<String, Sorter>,
     criterias: &std::collections::HashMap<String, Criteria>,
@@ -175,19 +178,42 @@ fn sort_image(
                 continue;
             }
 
-            let new_img = sort(&img_buf, *crit);
-            new_img.save(&file_path).unwrap();
-            let size = new_img.width() * new_img.height() * 3;
-            match sender.send(size) {
-                Ok(_) => (),
-                Err(e) => println!("Could not send back written size: {}", e),
+            if cfg!(feature = "multithread") {
+                let s = sender.clone();
+                let sort_func = sort.clone();
+                let crit_func = crit.clone();
+                let buf = img_buf.clone();
+                pool.execute(move || {
+                    let new_img = sort_func(&buf, crit_func);
+                    new_img.save(&file_path).unwrap();
+                    let size = new_img.width() * new_img.height() * 3;
+                    match s.send(size) {
+                        Ok(_) => (),
+                        Err(e) => println!("Could not send back written size: {}", e),
+                    }
+                    println!("Saved {} bytes - {:?}", size, file_path);
+                });
+            } else {
+                let new_img = sort(&img_buf, *crit);
+                new_img.save(&file_path).unwrap();
+                let size = new_img.width() * new_img.height() * 3;
+                match sender.send(size) {
+                    Ok(_) => (),
+                    Err(e) => println!("Could not send back written size: {}", e),
+                }
+                println!("Saved {} bytes - {:?}", size, file_path);
             }
-            println!("Saved {} bytes - {:?}", size, file_path);
         }
     }
 }
 
 fn main() {
+    if cfg!(feature = "multithread") {
+        println!("Running each generated image in parallel")
+    } else {
+        println!("Running each input image in parallel")
+    }
+
     let mut sorters: std::collections::HashMap<String, Sorter> = std::collections::HashMap::new();
     sorters.insert("Basic".to_string(), basic_sort);
     sorters.insert("Checker".to_string(), checker_sort);
@@ -215,6 +241,8 @@ fn main() {
         std::sync::mpsc::channel();
 
     let mut handles = Vec::new();
+    let pool = threadpool::ThreadPool::new(num_cpus::get());
+
     for entry in dirs {
         let dir = match entry {
             Err(e) => {
@@ -227,11 +255,12 @@ fn main() {
         if image_name.is_dir() {
             continue;
         }
+        let p = pool.clone();
+        let send = sender.clone();
         let s = sorters.clone();
         let c = criterias.clone();
-        let send = sender.clone();
         let handle = std::thread::spawn(move || {
-            sort_image(&send, &s, &c, &image_name);
+            sort_image(&p, &send, &s, &c, &image_name);
         });
         handles.push(handle);
     }
@@ -239,6 +268,8 @@ fn main() {
     for handle in handles {
         handle.join().unwrap();
     }
+
+    pool.join();
 
     let mut bytes_written = 0;
     loop {
@@ -250,3 +281,6 @@ fn main() {
     let bytes_written_mb = bytes_written as f32 / 1024.0 / 1024.0;
     println!("Wrote {} MB of data", bytes_written_mb);
 }
+
+// non-multithread: cargo run --release                         322.13s user 13.31s system 314% cpu 1:46.80 total
+// multithread:     cargo run --release --features multithread  420.40s user 23.94s system 612% cpu 1:12.49 total
